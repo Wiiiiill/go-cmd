@@ -1,3 +1,3 @@
 module github.com/Wiiiiill/go-cmd
 
-go 1.13
+go 1.16
