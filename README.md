@@ -8,12 +8,17 @@
 
 - [功能特性](#功能特性)
 - [安装](#安装)
+- [环境要求](#环境要求)
 - [快速开始](#快速开始)
 - [核心概念](#核心概念)
 - [API 文档](#api-文档)
 - [完整示例](#完整示例)
 - [高级用法](#高级用法)
 - [最佳实践](#最佳实践)
+- [常见问题](#常见问题)
+- [许可证](#许可证)
+- [贡献](#贡献)
+- [联系方式](#联系方式)
 
 ## ✨ 功能特性
 
@@ -36,6 +41,10 @@ go get github.com/Wiiiiill/go-cmd
 ```go
 import "github.com/Wiiiiill/go-cmd"
 ```
+
+## 环境要求
+
+- **Go**：本模块在 `go.mod` 中声明为 **Go 1.16 及以上**。建议使用当前受支持的 Go 版本进行开发与构建。
 
 ## 🚀 快速开始
 
@@ -114,6 +123,15 @@ type Command struct {
 | `Execute()` | 执行命令行参数解析和命令调用 |
 | `SetFlags(func(*flag.FlagSet))` | 设置全局标志参数 |
 | `SetUsageTemplate(string)` | 自定义帮助信息模板 |
+
+### 命令注册顺序（重要）
+
+子命令查找使用**按命令名字典序的二分查找**（见 `Commands.Search`）。因此：
+
+- 通过 `AddCommands` 注册的命令，其 `UsageLine` 中的**命令名**在整个列表中必须是**严格按字典序升序**排列的；否则部分子命令可能无法被解析。
+- 主帮助里命令列表的展示顺序，与 `AddCommands` 的**注册顺序**一致（模板对 `_commands` 做 `range`，不做排序）。
+
+若你按业务习惯注册顺序与字典序不一致，可先构造 `[]*Command` 并在注册前按 `Name()` 排序，再依次 `AddCommands`。
 
 ## 📚 API 文档
 
@@ -393,8 +411,8 @@ func main() {
 使用 "myapp help <命令>" 查看命令的详细信息。
 `)
 	
-	// 添加所有命令
-	cmd.AddCommands(cmdBuild, cmdTest, cmdClean)
+	// 添加所有命令（须按命令名字典序升序，供内部分查找）
+	cmd.AddCommands(cmdBuild, cmdClean, cmdTest)
 	
 	// 执行
 	cmd.Execute()
@@ -514,8 +532,8 @@ func main() {
 		f.StringVar(&configFile, "config", "config.json", "配置文件路径")
 	})
 	
-	// 添加命令
-	cmd.AddCommands(cmdServer, cmdMigrate, cmdVersion)
+	// 添加命令（须按命令名字典序：migrate < server < version）
+	cmd.AddCommands(cmdMigrate, cmdServer, cmdVersion)
 	
 	// 执行
 	cmd.Execute()
@@ -686,9 +704,9 @@ func main() {
 }
 ```
 
-### Q: 命令执行顺序如何控制？
+### Q: 命令在帮助里以什么顺序出现？查找时有什么要求？
 
-A: 命令在帮助信息中按字母顺序显示。库内部使用二分查找以提高查找效率。
+A: 主帮助中的命令顺序为 `AddCommands` 的**注册顺序**。解析子命令时通过**按命令名字典序的二分查找**定位，因此注册时必须保证各命令的 `Name()` 整体为**字典序升序**，否则可能出现「未知子命令」。详见上文 [命令注册顺序（重要）](#命令注册顺序重要)。
 
 ### Q: 如何禁用自动帮助命令？
 
@@ -696,7 +714,7 @@ A: 帮助命令是内置的。如果需要自定义帮助行为，可以通过 `
 
 ## 📄 许可证
 
-本项目采用 MIT 许可证。详见 [LICENSE](LICENSE) 文件。
+本项目采用 [MIT License](LICENSE)（Copyright (c) 2026 NJ）。
 
 ## 🤝 贡献
 
