@@ -27,7 +27,9 @@
 - **标志参数** - 完整支持 Go 标准库 flag 包的所有功能
 - **帮助系统** - 自动生成帮助文档和使用说明
 - **自定义模板** - 支持自定义使用说明的显示模板
-- **二分查找** - 高效的命令查找机制
+- **自动排序** - 命令自动按字典序排序，无需手动管理
+- **灵活的错误处理** - 支持返回错误或直接退出两种模式
+- **实例化 API** - 支持创建独立的 App 实例，提高可测试性
 - **零依赖** - 仅依赖 Go 标准库
 
 ## 📦 安装
@@ -48,7 +50,7 @@ import "github.com/Wiiiiill/go-cmd"
 
 ## 🚀 快速开始
 
-### 最简示例
+### 方式 1：使用包级函数（简单场景）
 
 创建一个带有单个命令的 CLI 工具：
 
@@ -79,6 +81,46 @@ func runHello(c *cmd.Command, args []string) error {
 func main() {
 	cmd.AddCommands(cmdHello)
 	cmd.Execute()
+}
+```
+
+### 方式 2：使用 App 实例（推荐）
+
+使用 App 实例可以更好地控制应用行为，提高可测试性：
+
+```go
+package main
+
+import (
+	"fmt"
+	"log"
+	"github.com/Wiiiiill/go-cmd"
+)
+
+var cmdHello = &cmd.Command{
+	Run:       runHello,
+	UsageLine: "hello [name]",
+	Short:     "打印问候语",
+	Long:      "hello 命令用于打印友好的问候语。\n",
+}
+
+func runHello(c *cmd.Command, args []string) error {
+	name := "World"
+	if len(args) > 0 {
+		name = args[0]
+	}
+	fmt.Printf("Hello, %s!\n", name)
+	return nil
+}
+
+func main() {
+	app := cmd.NewApp()
+	app.AddCommands(cmdHello)
+	
+	// 使用 ExecuteE 可以自定义错误处理
+	if err := app.ExecuteE(); err != nil {
+		log.Fatalf("Error: %v\n", err)
+	}
 }
 ```
 
@@ -117,21 +159,40 @@ type Command struct {
 
 ### 主要方法
 
+#### 包级函数（向后兼容）
+
 | 方法 | 说明 |
 |------|------|
 | `AddCommands(...*Command)` | 添加一个或多个命令 |
-| `Execute()` | 执行命令行参数解析和命令调用 |
+| `Execute()` | 执行命令行参数解析和命令调用（失败时退出） |
+| `ExecuteE() error` | 执行命令并返回错误（不自动退出） |
 | `SetFlags(func(*flag.FlagSet))` | 设置全局标志参数 |
 | `SetUsageTemplate(string)` | 自定义帮助信息模板 |
 
-### 命令注册顺序（重要）
+#### App 实例方法（推荐）
 
-子命令查找使用**按命令名字典序的二分查找**（见 `Commands.Search`）。因此：
+| 方法 | 说明 |
+|------|------|
+| `NewApp() *App` | 创建新的 CLI 应用实例 |
+| `app.AddCommands(...*Command)` | 添加一个或多个命令 |
+| `app.Execute()` | 执行命令（失败时退出） |
+| `app.ExecuteE() error` | 执行命令并返回错误 |
+| `app.SetFlags(func(*flag.FlagSet))` | 设置全局标志参数 |
+| `app.SetUsageTemplate(string)` | 自定义帮助信息模板 |
 
-- 通过 `AddCommands` 注册的命令，其 `UsageLine` 中的**命令名**在整个列表中必须是**严格按字典序升序**排列的；否则部分子命令可能无法被解析。
-- 主帮助里命令列表的展示顺序，与 `AddCommands` 的**注册顺序**一致（模板对 `_commands` 做 `range`，不做排序）。
+### 命令注册说明
 
-若你按业务习惯注册顺序与字典序不一致，可先构造 `[]*Command` 并在注册前按 `Name()` 排序，再依次 `AddCommands`。
+**无需手动排序**：从 v2.0 开始，命令会在执行时自动按字典序排序，你可以按任意顺序注册命令：
+
+```go
+// 可以按任意顺序添加命令
+cmd.AddCommands(cmdVersion, cmdBuild, cmdTest, cmdClean)
+// 或
+cmd.AddCommands(cmdTest, cmdVersion, cmdClean, cmdBuild)
+// 都可以正常工作
+```
+
+帮助信息中的命令列表会按照注册顺序显示，但命令查找会自动使用排序后的结果。
 
 ## 📚 API 文档
 
@@ -149,17 +210,43 @@ func AddCommands(cmds ...*Command)
 cmd.AddCommands(cmdVersion, cmdBuild, cmdRun)
 ```
 
-### Execute
+### Execute 和 ExecuteE
 
-解析命令行参数并执行相应的命令。这通常是 `main()` 函数中最后调用的函数。
+解析命令行参数并执行相应的命令。
 
 ```go
-func Execute()
+func Execute()        // 失败时自动退出
+func ExecuteE() error // 返回错误，由调用者处理
+```
+
+**Execute** - 传统方式，失败时自动退出：
+
+```go
+func main() {
+	cmd.AddCommands(cmdRun)
+	cmd.Execute() // 错误会导致程序退出
+}
+```
+
+**ExecuteE** - 灵活方式，返回错误：
+
+```go
+func main() {
+	app := cmd.NewApp()
+	app.AddCommands(cmdRun)
+	
+	if err := app.ExecuteE(); err != nil {
+		// 自定义错误处理
+		log.Printf("执行失败: %v", err)
+		os.Exit(1)
+	}
+}
 ```
 
 **功能：**
 - 解析命令行参数
 - 处理 `-h` 和 `--help` 标志
+- 自动排序命令（首次执行时）
 - 路由到相应的子命令
 - 处理错误和退出状态
 
@@ -200,16 +287,18 @@ func SetUsageTemplate(usageTemplate string)
 
 **默认模板：**
 
+模板会自动使用当前程序名（从 `os.Args[0]` 获取）：
+
 ```
-[webgo] is a web service base on web.go
+{{.AppName}} is a command line tool
 Usage:
-	[webgo] command [arguments]
+	{{.AppName}} command [arguments]
 
 The commands are:
-{{range .}}{{if .Runnable}}
+{{range .Commands}}{{if .Runnable}}
 	{{.Name | printf "%-11s"}} {{.Short}}{{end}}{{end}}
 
-Use "[webgo] help [command]" for more information about a command.
+Use "{{.AppName}} help [command]" for more information about a command.
 ```
 
 **自定义示例：**
@@ -220,7 +309,7 @@ const customTemplate = `MyApp - 我的应用程序
 	myapp <命令> [选项]
 
 可用命令：
-{{range .}}{{if .Runnable}}
+{{range .Commands}}{{if .Runnable}}
 	{{.Name | printf "%-15s"}} {{.Short}}{{end}}{{end}}
 
 使用 "myapp help <命令>" 查看命令的详细信息。
@@ -228,7 +317,8 @@ const customTemplate = `MyApp - 我的应用程序
 `
 
 func main() {
-	cmd.SetUsageTemplate(customTemplate)
+	app := cmd.NewApp()
+	app.SetUsageTemplate(customTemplate)
 	// ...
 }
 ```
@@ -402,7 +492,7 @@ func main() {
 	myapp <命令> [选项]
 
 可用命令：
-{{range .}}{{if .Runnable}}
+{{range .Commands}}{{if .Runnable}}
 	{{.Name | printf "%-11s"}} {{.Short}}{{end}}{{end}}
 
 全局选项:
@@ -411,7 +501,7 @@ func main() {
 使用 "myapp help <命令>" 查看命令的详细信息。
 `)
 	
-	// 添加所有命令（须按命令名字典序升序，供内部分查找）
+	// 添加所有命令（无需按字典序，会自动排序）
 	cmd.AddCommands(cmdBuild, cmdClean, cmdTest)
 	
 	// 执行
@@ -532,7 +622,7 @@ func main() {
 		f.StringVar(&configFile, "config", "config.json", "配置文件路径")
 	})
 	
-	// 添加命令（须按命令名字典序：migrate < server < version）
+	// 添加命令（无需按字典序，会自动排序）
 	cmd.AddCommands(cmdMigrate, cmdServer, cmdVersion)
 	
 	// 执行
@@ -543,6 +633,24 @@ func main() {
 ## 🔥 高级用法
 
 ### 错误处理
+
+#### 方式 1：使用 ExecuteE 自定义错误处理
+
+```go
+func main() {
+	app := cmd.NewApp()
+	app.AddCommands(cmdDeploy)
+	
+	if err := app.ExecuteE(); err != nil {
+		// 自定义错误处理逻辑
+		log.Printf("部署失败: %v", err)
+		// 发送通知、记录日志等
+		os.Exit(1)
+	}
+}
+```
+
+#### 方式 2：在命令中返回错误
 
 命令的 `Run` 函数返回 `error`，你可以返回错误来指示命令执行失败：
 
@@ -591,15 +699,17 @@ func runCopy(c *cmd.Command, args []string) error {
 
 ```go
 func main() {
-	commands := []*cmd.Command{cmdVersion}
+	app := cmd.NewApp()
+	
+	// 基础命令
+	app.AddCommands(cmdVersion)
 	
 	// 仅在开发环境添加调试命令
 	if os.Getenv("ENV") == "development" {
-		commands = append(commands, cmdDebug)
+		app.AddCommands(cmdDebug)
 	}
 	
-	cmd.AddCommands(commands...)
-	cmd.Execute()
+	app.Execute()
 }
 ```
 
@@ -704,9 +814,9 @@ func main() {
 }
 ```
 
-### Q: 命令在帮助里以什么顺序出现？查找时有什么要求？
+### Q: 命令在帮助里以什么顺序出现？
 
-A: 主帮助中的命令顺序为 `AddCommands` 的**注册顺序**。解析子命令时通过**按命令名字典序的二分查找**定位，因此注册时必须保证各命令的 `Name()` 整体为**字典序升序**，否则可能出现「未知子命令」。详见上文 [命令注册顺序（重要）](#命令注册顺序重要)。
+A: 从 v2.0 开始，命令会自动按字典序排序用于查找。帮助信息中的命令列表按注册顺序显示。你可以按任意顺序注册命令，无需担心排序问题。
 
 ### Q: 如何禁用自动帮助命令？
 

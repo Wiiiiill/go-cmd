@@ -15,7 +15,42 @@ import (
 	"unicode/utf8"
 )
 
+// App represents a CLI application with its commands and configuration
+type App struct {
+	commands       Commands
+	usageTemplate  string
+	setFlags       func(f *flag.FlagSet)
+	exitMu         sync.Mutex
+	exitStatus     int
+	commandsSorted bool
+}
+
+// NewApp creates a new CLI application with default settings
+func NewApp() *App {
+	return &App{
+		commands:      Commands{},
+		usageTemplate: defaultUsageTemplate(),
+		exitStatus:    0,
+	}
+}
+
+func defaultUsageTemplate() string {
+	return `{{.AppName}} is a command line tool
+Usage:
+	{{.AppName}} command [arguments]
+
+The commands are:
+{{range .Commands}}{{if .Runnable}}
+	{{.Name | printf "%-11s"}} {{.Short}}{{end}}{{end}}
+
+Use "{{.AppName}} help [command]" for more information about a command.
+`
+}
+
 var (
+	_defaultApp = NewApp()
+
+	// Deprecated: use App instance instead
 	_usageTemplate = `[webgo] is a web service base on web.go
 Usage:
 	[webgo] command [arguments]
@@ -33,19 +68,131 @@ Use "[webgo] help [command]" for more information about a command.
 	_setFlags   func(f *flag.FlagSet)
 )
 
+// SetUsageTemplate sets a custom usage template for the app
+func (a *App) SetUsageTemplate(usageTemplate string) {
+	a.usageTemplate = usageTemplate
+}
+
+// SetFlags sets flags that will be added to all commands
+func (a *App) SetFlags(f func(f *flag.FlagSet)) {
+	a.setFlags = f
+}
+
+// AddCommands adds one or more commands to the app
+func (a *App) AddCommands(cmds ...*Command) {
+	a.commands = append(a.commands, cmds...)
+	a.commandsSorted = false
+}
+
+// sortCommands sorts commands by name if not already sorted
+func (a *App) sortCommands() {
+	if !a.commandsSorted && len(a.commands) > 0 {
+		sort.Slice(a.commands, func(i, j int) bool {
+			return a.commands[i].Name() < a.commands[j].Name()
+		})
+		a.commandsSorted = true
+	}
+}
+
+// getCommand gets a command by name
+func (a *App) getCommand(name string) (*Command, error) {
+	if len(a.commands) == 0 {
+		return nil, fmt.Errorf("no commands")
+	}
+
+	a.sortCommands()
+	cmd := a.commands.Search(name)
+
+	if cmd == nil {
+		return nil, fmt.Errorf("unknown sub command %q", name)
+	}
+
+	return cmd, nil
+}
+
+// ExecuteE executes the app and returns any error instead of exiting
+func (a *App) ExecuteE() error {
+	flag.Usage = func() { a.usage() }
+	flag.Parse()
+	log.SetFlags(0)
+
+	args := flag.Args()
+
+	if len(args) < 1 {
+		a.printUsage(os.Stderr)
+		return fmt.Errorf("no command specified")
+	}
+
+	if args[0] == "help" {
+		return a.help(args[1:])
+	}
+
+	name := args[0]
+	cmd, err := a.getCommand(name)
+
+	if err != nil {
+		return fmt.Errorf("cmd(%s): %w", name, err)
+	}
+
+	a.addFlags(&cmd.Flag)
+	cmd.Flag.Usage = func() { cmd.UsageWithApp(a) }
+	if err := cmd.Flag.Parse(args[1:]); err != nil {
+		return fmt.Errorf("cmd(%s): %w", name, err)
+	}
+
+	if err := cmd.Run(cmd, cmd.Flag.Args()); err != nil {
+		return fmt.Errorf("cmd(%s): %w", name, err)
+	}
+
+	return nil
+}
+
+// Execute executes the app and exits on error (for backward compatibility)
+func (a *App) Execute() {
+	if err := a.ExecuteE(); err != nil {
+		log.Printf("%v\n", err)
+		a.setExitStatus(1)
+		a.exit()
+	}
+	a.exit()
+}
+
+func (a *App) addFlags(f *flag.FlagSet) {
+	if a.setFlags != nil {
+		a.setFlags(f)
+	}
+}
+
+func (a *App) setExitStatus(n int) {
+	a.exitMu.Lock()
+	if a.exitStatus < n {
+		a.exitStatus = n
+	}
+	a.exitMu.Unlock()
+}
+
+func (a *App) exit() {
+	os.Exit(a.exitStatus)
+}
+
+// Package-level functions for backward compatibility
+
 // SetUsageTemplate set value to usageTemplate
 func SetUsageTemplate(usageTemplate string) {
 	_usageTemplate = usageTemplate
+	_defaultApp.SetUsageTemplate(usageTemplate)
 }
 
 // SetFlags set flags to all commands
 func SetFlags(f func(f *flag.FlagSet)) {
 	_setFlags = f
+	_defaultApp.SetFlags(f)
 }
 
 // AddCommands Add Command.
 func AddCommands(cmds ...*Command) {
 	_commands = append(_commands, cmds...)
+	_defaultApp.AddCommands(cmds...)
 }
 
 // getCommand get Command by name.
@@ -61,6 +208,11 @@ func getCommand(name string) (*Command, error) {
 	}
 
 	return cmd, nil
+}
+
+// ExecuteE executes the default app and returns any error
+func ExecuteE() error {
+	return _defaultApp.ExecuteE()
 }
 
 // Execute func
@@ -123,6 +275,12 @@ func (c *Command) Usage() {
 	os.Exit(2)
 }
 
+// UsageWithApp prints usage for a command using the app instance
+func (c *Command) UsageWithApp(a *App) {
+	a.help([]string{c.Name()})
+	os.Exit(2)
+}
+
 // Runnable bool
 func (c *Command) Runnable() bool {
 	return c.Run != nil
@@ -140,6 +298,60 @@ func (c *Commands) Search(name string) *Command {
 	}
 
 	return nil
+}
+
+func (a *App) usage() {
+	a.printUsage(os.Stderr)
+	os.Exit(2)
+}
+
+func (a *App) printUsage(w io.Writer) {
+	a.sortCommands()
+	bw := bufio.NewWriter(w)
+
+	// Prepare template data with app name
+	data := struct {
+		AppName  string
+		Commands Commands
+	}{
+		AppName:  getAppName(),
+		Commands: a.commands,
+	}
+
+	runTemplate(bw, a.usageTemplate, data)
+	bw.Flush()
+}
+
+func (a *App) help(args []string) error {
+	if len(args) == 0 {
+		a.printUsage(os.Stdout)
+		return nil
+	}
+	if len(args) != 1 {
+		return fmt.Errorf("usage: help command\n\nToo many arguments given")
+	}
+
+	name := args[0]
+
+	cmd, err := a.getCommand(name)
+
+	if err != nil {
+		return fmt.Errorf("help(%s): %w", name, err)
+	}
+
+	if cmd.Runnable() {
+		fmt.Fprintf(os.Stdout, "usage: %s\n", cmd.UsageLine)
+	}
+
+	runTemplate(os.Stdout, cmd.Long, nil)
+	return nil
+}
+
+func getAppName() string {
+	if len(os.Args) > 0 {
+		return os.Args[0]
+	}
+	return "app"
 }
 
 func usage() {
